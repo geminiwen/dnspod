@@ -12,6 +12,20 @@ import (
 	d "github.com/nrdcg/dnspod-go"
 )
 
+// RecordWithID implements libdns.Record and stores DNSPod record ID
+type RecordWithID struct {
+	ResourceRecord libdns.RR
+	ID             string
+}
+
+func (r *RecordWithID) RR() libdns.RR {
+	return r.ResourceRecord
+}
+
+func (r *RecordWithID) GetID() string {
+	return r.ID
+}
+
 // Client ...
 type Client struct {
 	client     *d.Client
@@ -74,13 +88,14 @@ func (p *Provider) getDNSEntries(ctx context.Context, zone string) ([]libdns.Rec
 
 	for _, entry := range reqRecords {
 		ttl, _ := strconv.ParseInt(entry.TTL, 10, 64)
-		record := libdns.Record{
-			Name:  entry.Name + "." + strings.Trim(zone, ".") + ".",
-			Value: entry.Value,
-			Type:  entry.Type,
-			TTL:   time.Duration(ttl) * time.Second,
-			ID:    entry.ID,
+		rr := libdns.RR{
+			Name: entry.Name + "." + strings.Trim(zone, ".") + ".",
+			Data: entry.Value,
+			Type: entry.Type,
+			TTL:  time.Duration(ttl) * time.Second,
 		}
+		// Store the DNSPod record ID in a custom implementation
+		record := &RecordWithID{ResourceRecord: rr, ID: entry.ID}
 		records = append(records, record)
 	}
 
@@ -100,12 +115,13 @@ func (p *Provider) addDNSEntry(ctx context.Context, zone string, record libdns.R
 
 	p.getClient()
 
+	rr := record.RR()
 	entry := d.Record{
-		Name:  extractRecordName(record.Name, zone),
-		Value: record.Value,
-		Type:  record.Type,
+		Name:  extractRecordName(rr.Name, zone),
+		Value: rr.Data,
+		Type:  rr.Type,
 		Line:  "默认",
-		TTL:   strconv.Itoa(int(record.TTL.Seconds())),
+		TTL:   strconv.Itoa(int(rr.TTL.Seconds())),
 	}
 	domainID, err := p.getDomainIDByDomainName(zone)
 	if nil != err {
@@ -117,9 +133,10 @@ func (p *Provider) addDNSEntry(ctx context.Context, zone string, record libdns.R
 		// fmt.Printf("%s, %s, %s, %s, %v", zone, entry.Name, entry.Value, err.Error(), record)
 		return record, fmt.Errorf("Create record err.Zone:%s, Name: %s, Value: %s, Error:%s, %v", zone, entry.Name, entry.Value, err.Error(), record)
 	}
-	record.ID = rec.ID
+	// Create a new record with the DNSPod ID
+	newRecord := &RecordWithID{ResourceRecord: rr, ID: rec.ID}
 
-	return record, nil
+	return newRecord, nil
 }
 
 func (p *Provider) removeDNSEntry(ctx context.Context, zone string, record libdns.Record) (libdns.Record, error) {
@@ -128,15 +145,21 @@ func (p *Provider) removeDNSEntry(ctx context.Context, zone string, record libdn
 
 	p.getClient()
 
+	rr := record.RR()
 	domainID, err := p.getDomainIDByDomainName(zone)
 	if nil != err {
-		// fmt.Printf("%s, %s, %s, %s, %v", zone, record.Name, record.Value, err.Error(), record)
-		return record, fmt.Errorf("Remove record err.Zone:%s, Name: %s, Value: %s, Error:%s", zone, record.Name, record.Value, err.Error())
+		// fmt.Printf("%s, %s, %s, %s, %v", zone, rr.Name, rr.Data, err.Error(), record)
+		return record, fmt.Errorf("Remove record err.Zone:%s, Name: %s, Value: %s, Error:%s", zone, rr.Name, rr.Data, err.Error())
 	}
-	_, err = p.client.Records.Delete(domainID, record.ID)
+	// Extract DNSPod ID from our custom record type
+	recordID := ""
+	if rwid, ok := record.(*RecordWithID); ok {
+		recordID = rwid.ID
+	}
+	_, err = p.client.Records.Delete(domainID, recordID)
 	if err != nil {
-		// fmt.Printf("%s, %s, %s, %s, %v", zone, record.Name, record.Value, err.Error(), record)
-		return record, fmt.Errorf("Remove record err.Zone:%s, Name: %s, Value: %s, Error:%s", zone, record.Name, record.Value, err.Error())
+		// fmt.Printf("%s, %s, %s, %s, %v", zone, rr.Name, rr.Data, err.Error(), record)
+		return record, fmt.Errorf("Remove record err.Zone:%s, Name: %s, Value: %s, Error:%s", zone, rr.Name, rr.Data, err.Error())
 	}
 
 	return record, nil
@@ -148,19 +171,25 @@ func (p *Provider) updateDNSEntry(ctx context.Context, zone string, record libdn
 
 	p.getClient()
 
+	rr := record.RR()
 	entry := d.Record{
-		Name:  extractRecordName(record.Name, zone),
-		Value: record.Value,
-		Type:  record.Type,
+		Name:  extractRecordName(rr.Name, zone),
+		Value: rr.Data,
+		Type:  rr.Type,
 		Line:  "默认",
-		TTL:   strconv.Itoa(int(record.TTL.Seconds())),
+		TTL:   strconv.Itoa(int(rr.TTL.Seconds())),
 	}
 	domainID, err := p.getDomainIDByDomainName(zone)
 	if nil != err {
 		// fmt.Printf("%s, %s, %s, %s, %v", zone, entry.Name, entry.Value, err.Error(), record)
 		return record, fmt.Errorf("Update record err.Zone:%s, Name: %s, Value: %s, Error:%s, %v", zone, entry.Name, entry.Value, err.Error(), record)
 	}
-	_, _, err = p.client.Records.Update(domainID, record.ID, entry)
+	// Extract DNSPod ID from our custom record type
+	recordID := ""
+	if rwid, ok := record.(*RecordWithID); ok {
+		recordID = rwid.ID
+	}
+	_, _, err = p.client.Records.Update(domainID, recordID, entry)
 	if err != nil {
 		// fmt.Printf("%s, %s, %s, %s, %v", zone, entry.Name, entry.Value, err.Error(), record)
 		return record, fmt.Errorf("Update record err.Zone:%s, Name: %s, Value: %s, Error:%s, %v", zone, entry.Name, entry.Value, err.Error(), record)
